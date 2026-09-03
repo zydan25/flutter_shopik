@@ -1,0 +1,6 @@
+{
+  "name": "شبيك",
+  "description": "تطبيق متجر ومحفظة شبيك - شبيك لبيّك طلبك بين يديك مع إدارة الطلبات والمحادثة والتقييمات",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

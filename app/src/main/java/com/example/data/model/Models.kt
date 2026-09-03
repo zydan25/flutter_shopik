@@ -1,0 +1,148 @@
+package com.example.data.model
+
+data class Store(
+    val id: Int,
+    val name: String,
+    val category: String,
+    val rating: Double,
+    val deliveryTime: String,
+    val minOrder: String,
+    val deliveryFee: String,
+    val isOpen: Boolean = true,
+    val description: String = "",
+    val badge: String = "معتمد",
+    val location: String = "صنعاء - شارع الزبيري",
+    val phone: String = "771234567",
+    val workingHours: String = "9:00 ص - 10:00 م",
+    val storeCategories: List<String> = listOf("الكل", "العروض", "جديدنا", "الأكثر طلباً")
+)
+
+data class Product(
+    val id: Int,
+    val storeId: Int,
+    val storeName: String,
+    val name: String,
+    val description: String,
+    val priceYer: Double,
+    val originalPriceYer: Double? = null,
+    val category: String,
+    val rating: Double = 4.8,
+    val inStock: Boolean = true,
+    val badge: String? = null,
+    val images: List<String> = emptyList(),
+    val colors: List<String> = listOf("أسود ملكي", "أزرق تيتانيوم", "فضي فاخر"),
+    val sizes: List<String> = listOf("النسخة القياسية", "نسخة المحترفين Pro"),
+    val warranty: String = "ضمان سنتين معتمد من المتجر مع استبدال مجاني",
+    val hasWarranty: Boolean = true,
+    val reviewsCount: Int = 42
+)
+
+data class TelecomPackage(
+    val id: String,
+    val name: String,
+    val description: String,
+    val priceYer: Double,
+    val category: String, // "رصيد", "فوري", "باقات", "جملة", "ريال"
+    val operator: String
+)
+
+data class CategoryItem(
+    val id: String,
+    val title: String,
+    val iconName: String,
+    val productCount: Int
+)
+
+data class BannerItem(
+    val id: Int,
+    val title: String,
+    val subtitle: String,
+    val discountTag: String,
+    val ctaText: String,
+    val isElectronics: Boolean = true
+)
+
+data class CartItem(
+    val product: Product,
+    var quantity: Int
+)
+
+data class WalletAccount(
+    val accountNumber: String,
+    val userName: String,
+    val phone: String,
+    val isVerified: Boolean = true,
+    val balanceYer: Double,
+    val balanceSar: Double,
+    val balanceUsd: Double,
+    val points: Int,
+    val savingsPocket: Double
+)
+
+data class WalletTransaction(
+    val id: String,
+    val title: String,
+    val type: String, // "PURCHASE", "DEPOSIT", "TRANSFER", "BILL", "CASHBACK"
+    val amount: Double,
+    val currency: String,
+    val date: String,
+    val isPositive: Boolean
+)
+
+data class OrderItemDetail(
+    val productName: String,
+    val quantity: Int,
+    val priceYer: Double,
+    val category: String = ""
+)
+
+data class OrderChatMessage(
+    val id: String,
+    val senderName: String,
+    val message: String,
+    val time: String,
+    val isFromUser: Boolean
+)
+
+data class OrderReview(
+    val id: String,
+    val userName: String,
+    val rating: Float,
+    val comment: String,
+    val date: String
+)
+
+data class StoreOrder(
+    val id: String,
+    val storeName: String,
+    val totalAmount: Double,
+    val currency: String = "ر.ي",
+    val date: String,
+    val status: String, // "قيد التجهيز", "في الطريق مع المندوب", "تم التسليم"
+    val itemsCount: Int,
+    val items: List<OrderItemDetail> = emptyList(),
+    val deliveryAddress: String = "صنعاء - شارع حدة",
+    val deliveryDriver: String = "الكابتن أحمد الخولاني",
+    val driverPhone: String = "770123456",
+    val paymentMethod: String = "محفظة جيب الإلكترونية (مدفوع بالكامل)",
+    val statusStep: Int = 2, // 0: تم استلام الطلب, 1: قيد التجهيز, 2: في الطريق مع المندوب, 3: تم التسليم
+    val rating: Float? = null,
+    val userReview: String? = null,
+    val reviews: List<OrderReview> = emptyList(),
+    val chatMessages: List<OrderChatMessage> = emptyList()
+)
+
+data class AppNotification(
+    val id: String,
+    val title: String,
+    val message: String,
+    val time: String,
+    val isRead: Boolean = false
+)
+
+data class UserSession(
+    val phone: String,
+    val fullName: String,
+    val token: String? = null,
+    val isLoggedIn: Boolean = true
+)
