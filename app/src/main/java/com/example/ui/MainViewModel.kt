@@ -2,16 +2,7 @@ package com.example.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.model.AppNotification
-import com.example.data.model.CartItem
-import com.example.data.model.OrderChatMessage
-import com.example.data.model.Product
-import com.example.data.model.Store
-import com.example.data.model.StoreOrder
-import com.example.data.model.TelecomPackage
-import com.example.data.model.UserSession
-import com.example.data.model.WalletAccount
-import com.example.data.model.WalletTransaction
+import com.example.data.model.*
 import com.example.data.repository.StoreRepository
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,7 +26,21 @@ enum class ScreenTab {
     ORDERS,
     CATEGORIES,
     PAYMENT_NETWORK,
-    PRODUCT_DETAIL
+    PRODUCT_DETAIL,
+    TRENDS,
+    SEARCH,
+    ADDRESSES,
+    INVITE,
+    SUPPORT,
+    SETTINGS,
+    VENDOR_PORTAL,
+    ADMIN_PORTAL,
+    SERVICES,
+    NETWORK_CARDS,
+    GAMES_CARDS,
+    PROGRAMS_CARDS,
+    REGISTER,
+    LOGIN
 }
 
 class MainViewModel(
@@ -74,8 +79,9 @@ class MainViewModel(
     }
 
     // Categories screen navigation
-    fun openCategories(initialCategory: String = "all") {
+    fun openCategories(initialCategory: String = "all", initialSubCategory: String = "الكل") {
         _selectedCategory.value = initialCategory
+        _selectedSubCategory.value = initialSubCategory
         _selectedTab.value = ScreenTab.CATEGORIES
     }
 
@@ -216,8 +222,17 @@ class MainViewModel(
     private val _selectedCategory = MutableStateFlow("all")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
+    // Selected subcategory filter
+    private val _selectedSubCategory = MutableStateFlow("الكل")
+    val selectedSubCategory: StateFlow<String> = _selectedSubCategory.asStateFlow()
+
     fun selectCategory(categoryId: String) {
         _selectedCategory.value = categoryId
+        _selectedSubCategory.value = "الكل"
+    }
+
+    fun selectSubCategory(subCategory: String) {
+        _selectedSubCategory.value = subCategory
     }
 
     // Selected store filter for Store Detail view
@@ -226,6 +241,62 @@ class MainViewModel(
 
     fun selectStore(storeId: Int?) {
         _selectedStoreId.value = storeId
+    }
+
+    // Matching and navigating to Product from Order or Category
+    fun openProductById(productId: Int) {
+        val prod = repository.products.value.firstOrNull { it.id == productId }
+        if (prod != null) {
+            openProductDetail(prod)
+        }
+    }
+
+    fun openProductForOrderItem(item: OrderItemDetail) {
+        val prod = if (item.productId != null) {
+            repository.products.value.firstOrNull { it.id == item.productId }
+        } else {
+            repository.products.value.firstOrNull { it.name.trim() == item.productName.trim() }
+                ?: repository.products.value.firstOrNull { it.name.contains(item.productName.take(10)) }
+                ?: repository.products.value.firstOrNull { it.category == item.category }
+        }
+        if (prod != null) {
+            openProductDetail(prod)
+        }
+    }
+
+    fun reorderItem(item: OrderItemDetail) {
+        val prod = if (item.productId != null) {
+            repository.products.value.firstOrNull { it.id == item.productId }
+        } else {
+            repository.products.value.firstOrNull { it.name.trim() == item.productName.trim() }
+        }
+        if (prod != null) {
+            repository.addToCart(prod)
+            showOrderSuccessDialog.value = "تمت إضافة '${prod.name}' إلى السلة بنجاح!"
+        } else {
+            val fallback = Product(
+                id = item.productId ?: (9000..9999).random(),
+                storeId = 1,
+                storeName = item.storeName.ifBlank { "متجر شبيك" },
+                name = item.productName,
+                description = "صنف معاد طلبه من طلباتك السابقة",
+                priceYer = item.priceYer,
+                category = item.category.ifBlank { "all" },
+                subCategory = item.subCategory
+            )
+            repository.addToCart(fallback)
+            showOrderSuccessDialog.value = "تمت إضافة '${fallback.name}' إلى السلة بنجاح!"
+        }
+    }
+
+    fun getRelatedProducts(product: Product): List<Product> {
+        return repository.products.value.filter {
+            it.id != product.id && (it.category == product.category || (it.subCategory.isNotBlank() && it.subCategory == product.subCategory))
+        }.take(6)
+    }
+
+    fun getCategoryTitle(catId: String): String {
+        return repository.categories.firstOrNull { it.id == catId }?.title ?: catId
     }
 
     // Active order selected for Details View
@@ -262,6 +333,7 @@ class MainViewModel(
 
     // Data streams from repository
     val banners = repository.banners
+    val categoriesState: StateFlow<List<CategoryItem>> = repository.categoriesState
     val categories = repository.categories
     val stores: StateFlow<List<Store>> = repository.stores
     val products: StateFlow<List<Product>> = repository.products
@@ -273,24 +345,50 @@ class MainViewModel(
     val orders: StateFlow<List<StoreOrder>> = repository.orders
     val userSession: StateFlow<UserSession> = repository.userSession
     val djangoBaseUrl: StateFlow<String> = repository.djangoBaseUrl
+    val addresses = repository.addresses
+    val supportTickets = repository.supportTickets
+    val supportChatMessages = repository.supportChatMessages
+    val referralCode = repository.referralCode
+    val invitedCount = repository.invitedCount
+    val referralRewardYer = repository.referralRewardYer
+    val selectedCurrency = repository.selectedCurrency
+    val notificationsEnabled = repository.notificationsEnabled
+    val currencyRates = repository.currencyRates
+    val vendorFinance = repository.vendorFinance
+    val vendorPayouts = repository.vendorPayouts
 
-    // Filtered Products based on search query, category, and store filter
+    fun addAddress(address: com.example.data.model.UserAddress) = repository.addAddress(address)
+    fun setDefaultAddress(id: Int) = repository.setDefaultAddress(id)
+    fun deleteAddress(id: Int) = repository.deleteAddress(id)
+    fun sendSupportMessage(msg: String) = repository.sendSupportMessage(msg)
+    fun createSupportTicket(subject: String, category: String, details: String) = repository.createSupportTicket(subject, category, details)
+    fun setSelectedCurrency(curr: String) = repository.setSelectedCurrency(curr)
+    fun setNotificationsEnabled(enabled: Boolean) = repository.setNotificationsEnabled(enabled)
+    fun requestVendorPayout(amount: Double, ref: String) = repository.requestVendorPayout(amount, ref)
+    fun addVendorProduct(name: String, desc: String, price: Double, category: String, stock: Int, badge: String?) = repository.addVendorProduct(name, desc, price, category, stock, badge)
+    fun updateOrderStatus(orderId: String, status: String, step: Int) = repository.updateOrderStatus(orderId, status, step)
+
+    // Filtered Products based on search query, category, subcategory, and store filter
     val filteredProducts: StateFlow<List<Product>> = combine(
         repository.products,
         _searchQuery,
         _selectedCategory,
+        _selectedSubCategory,
         _selectedStoreId
-    ) { products, query, category, storeId ->
+    ) { products, query, category, subCategory, storeId ->
         products.filter { product ->
             val matchesQuery = query.isBlank() ||
                     product.name.contains(query, ignoreCase = true) ||
                     product.description.contains(query, ignoreCase = true) ||
+                    product.brand.contains(query, ignoreCase = true) ||
+                    product.subCategory.contains(query, ignoreCase = true) ||
                     product.storeName.contains(query, ignoreCase = true)
 
             val matchesCategory = category == "all" || product.category == category
+            val matchesSubCategory = subCategory == "الكل" || product.subCategory.isBlank() || product.subCategory == subCategory
             val matchesStore = storeId == null || product.storeId == storeId
 
-            matchesQuery && matchesCategory && matchesStore
+            matchesQuery && matchesCategory && matchesSubCategory && matchesStore
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -361,12 +459,24 @@ class MainViewModel(
         }
     }
 
-    fun login(phone: String, pass: String): Boolean {
-        val result = repository.loginWithPhoneAndPassword(phone, pass)
-        if (result) {
+    suspend fun login(phone: String, pass: String): Pair<Boolean, String?> {
+        val (success, errorMsg) = repository.loginWithPhoneAndPassword(phone, pass)
+        if (success) {
             showLoginDialog.value = false
         }
-        return result
+        return Pair(success, errorMsg)
+    }
+
+    suspend fun register(phone: String, pass: String, firstName: String, lastName: String, governorate: String): Pair<Boolean, String?> {
+        val (success, errorMsg) = repository.registerUser(phone, pass, firstName, lastName, governorate)
+        if (success) {
+            showLoginDialog.value = false
+        }
+        return Pair(success, errorMsg)
+    }
+
+    suspend fun syncUserProfile(): Boolean {
+        return repository.syncUserProfile()
     }
 
     fun logout() {

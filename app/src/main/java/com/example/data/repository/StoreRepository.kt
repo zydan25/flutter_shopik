@@ -1,58 +1,178 @@
 package com.example.data.repository
 
-import com.example.data.model.AppNotification
-import com.example.data.model.BannerItem
-import com.example.data.model.CartItem
-import com.example.data.model.CategoryItem
-import com.example.data.model.OrderChatMessage
-import com.example.data.model.OrderItemDetail
-import com.example.data.model.OrderReview
-import com.example.data.model.Product
-import com.example.data.model.Store
-import com.example.data.model.StoreOrder
-import com.example.data.model.TelecomPackage
-import com.example.data.model.UserSession
-import com.example.data.model.WalletAccount
-import com.example.data.model.WalletTransaction
+import com.example.data.model.*
+import com.example.data.remote.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 class StoreRepository {
 
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+
     // Django server settings
-    private val _djangoBaseUrl = MutableStateFlow("http://10.0.2.2:8000/api/")
+    private val _djangoBaseUrl = MutableStateFlow("https://shopik.alattab.site/api/")
     val djangoBaseUrl: StateFlow<String> = _djangoBaseUrl.asStateFlow()
 
     fun updateDjangoBaseUrl(newUrl: String) {
         _djangoBaseUrl.value = newUrl.trim()
+        fetchStoresAndProductsFromApi()
     }
 
     // User authentication session
     private val _userSession = MutableStateFlow(
         UserSession(
-            phone = "770123456",
-            fullName = "زيدان العطاب",
-            token = "drf_jwt_sample_token_778899",
-            isLoggedIn = true
+            phone = "",
+            fullName = "زائر",
+            token = null,
+            isLoggedIn = false
         )
     )
     val userSession: StateFlow<UserSession> = _userSession.asStateFlow()
 
-    fun loginWithPhoneAndPassword(phone: String, pass: String): Boolean {
-        if (phone.isNotBlank() && pass.length >= 4) {
-            _userSession.value = UserSession(
-                phone = phone,
-                fullName = if (phone.contains("770") || phone.contains("77")) "زيدان العطاب" else "مستخدم سوق بلس",
-                token = "drf_token_${System.currentTimeMillis()}",
-                isLoggedIn = true
-            )
-            return true
+    suspend fun loginWithPhoneAndPassword(phone: String, pass: String): Pair<Boolean, String?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val api = NetworkClient.getApiService(_djangoBaseUrl.value)
+                val response = api.login(LoginPayload(phone = phone.trim(), password = pass.trim()))
+                if (response.isSuccessful && response.body() != null) {
+                    val authBody = response.body()!!
+                    val user = authBody.user
+                    val fullName = listOfNotNull(user.firstName, user.lastName)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                        .ifBlank { "مستخدم ${user.phone}" }
+                    _userSession.value = UserSession(
+                        phone = user.phone,
+                        fullName = fullName,
+                        token = authBody.token,
+                        isLoggedIn = true,
+                        governorate = user.governorate ?: "",
+                        pointsBalance = user.pointsBalance ?: 0,
+                        role = user.role ?: "customer"
+                    )
+                    // Fetch real orders with this token
+                    fetchOrdersFromApi(authBody.token)
+                    Pair(true, null)
+                } else {
+                    val err = response.errorBody()?.string() ?: ""
+                    val msg = when {
+                        err.contains("detail") -> {
+                            val match = Regex("\"detail\"\\s*:\\s*\"([^\"]+)\"").find(err)
+                            match?.groupValues?.get(1) ?: "بيانات الدخول غير صحيحة"
+                        }
+                        response.code() == 400 || response.code() == 401 -> "رقم الهاتف أو كلمة السر غير صحيحة"
+                        else -> "خطأ في تسجيل الدخول (رمز ${response.code()})"
+                    }
+                    Pair(false, msg)
+                }
+            } catch (e: Exception) {
+                Pair(false, "تعذر الاتصال بالسيرفر: ${e.localizedMessage}")
+            }
         }
-        return false
+    }
+
+    suspend fun registerUser(
+        phone: String,
+        pass: String,
+        firstName: String,
+        lastName: String,
+        governorate: String
+    ): Pair<Boolean, String?> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val api = NetworkClient.getApiService(_djangoBaseUrl.value)
+                val response = api.register(
+                    RegisterPayload(
+                        phone = phone.trim(),
+                        password = pass.trim(),
+                        firstName = firstName.trim().ifBlank { null },
+                        lastName = lastName.trim().ifBlank { null },
+                        governorate = governorate.trim().ifBlank { null }
+                    )
+                )
+                if (response.isSuccessful && response.body() != null) {
+                    val authBody = response.body()!!
+                    val user = authBody.user
+                    val fullName = listOfNotNull(user.firstName, user.lastName)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                        .ifBlank { "مستخدم ${user.phone}" }
+                    _userSession.value = UserSession(
+                        phone = user.phone,
+                        fullName = fullName,
+                        token = authBody.token,
+                        isLoggedIn = true,
+                        governorate = user.governorate ?: governorate,
+                        pointsBalance = user.pointsBalance ?: 0,
+                        role = user.role ?: "customer"
+                    )
+                    fetchOrdersFromApi(authBody.token)
+                    Pair(true, null)
+                } else {
+                    val err = response.errorBody()?.string() ?: ""
+                    val msg = when {
+                        err.contains("phone") -> "رقم الهاتف مسجل مسبقاً أو غير صالح"
+                        err.contains("detail") -> {
+                            val match = Regex("\"detail\"\\s*:\\s*\"([^\"]+)\"").find(err)
+                            match?.groupValues?.get(1) ?: "فشل التسجيل على السيرفر"
+                        }
+                        else -> "فشل إنشاء الحساب (رمز ${response.code()})"
+                    }
+                    Pair(false, msg)
+                }
+            } catch (e: Exception) {
+                Pair(false, "خطأ في الاتصال بالخادم: ${e.localizedMessage}")
+            }
+        }
+    }
+
+    suspend fun syncUserProfile(): Boolean {
+        val token = _userSession.value.token ?: return false
+        return withContext(Dispatchers.IO) {
+            try {
+                val api = NetworkClient.getApiService(_djangoBaseUrl.value)
+                val resp = api.getProfile("Token $token")
+                if (resp.isSuccessful && resp.body() != null) {
+                    val user = resp.body()!!
+                    val fullName = listOfNotNull(user.firstName, user.lastName)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                        .ifBlank { _userSession.value.fullName }
+                    _userSession.value = _userSession.value.copy(
+                        phone = user.phone,
+                        fullName = fullName,
+                        governorate = user.governorate ?: _userSession.value.governorate,
+                        pointsBalance = user.pointsBalance ?: _userSession.value.pointsBalance,
+                        role = user.role ?: _userSession.value.role
+                    )
+                    true
+                } else {
+                    false
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    suspend fun testDjangoConnection(url: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val api = NetworkClient.getApiService(url)
+                val resp = api.getVendors()
+                resp.isSuccessful
+            } catch (e: Exception) {
+                false
+            }
+        }
     }
 
     fun logout() {
@@ -84,16 +204,56 @@ class StoreRepository {
         )
     )
 
-    // Categories
-    val categories = listOf(
-        CategoryItem("all", "الكل", "grid", 48),
-        CategoryItem("electronics", "إلكترونيات", "phone_iphone", 14),
-        CategoryItem("supermarket", "سوبرماركت", "shopping_basket", 18),
-        CategoryItem("fashion", "أزياء وموضة", "checkroom", 12),
-        CategoryItem("perfumes", "عطور وتجميل", "spa", 9),
-        CategoryItem("pharmacy", "صحة وصيدليات", "local_pharmacy", 8),
-        CategoryItem("home", "منزل وديكور", "chair", 6)
+    // Categories with Subcategories Hierarchy
+    private val _categories = MutableStateFlow(
+        listOf(
+            CategoryItem("all", "الكل", "grid", 48, listOf("الكل")),
+            CategoryItem(
+                id = "electronics",
+                title = "إلكترونيات",
+                iconName = "phone_iphone",
+                productCount = 14,
+                subCategories = listOf("الكل", "سماعات وملحقات", "ساعات ذكية", "شواحن وكابلات", "أجهزة ذكية")
+            ),
+            CategoryItem(
+                id = "supermarket",
+                title = "سوبرماركت",
+                iconName = "shopping_basket",
+                productCount = 18,
+                subCategories = listOf("الكل", "سلات غذائية", "عسل ومأكولات", "زيوت وتموين", "معلبات ومشروبات")
+            ),
+            CategoryItem(
+                id = "fashion",
+                title = "أزياء وموضة",
+                iconName = "checkroom",
+                productCount = 12,
+                subCategories = listOf("الكل", "أزياء رجالية", "أحذية فاخرة", "أشمغة وإكسسوارات")
+            ),
+            CategoryItem(
+                id = "perfumes",
+                title = "عطور وتجميل",
+                iconName = "spa",
+                productCount = 9,
+                subCategories = listOf("الكل", "عطور ملكية", "دهن عود وبخور", "مجموعات هدايا")
+            ),
+            CategoryItem(
+                id = "pharmacy",
+                title = "صحة وصيدليات",
+                iconName = "local_pharmacy",
+                productCount = 8,
+                subCategories = listOf("الكل", "فيتامينات ومكملات", "مستلزمات طبية", "عناية شخصية")
+            ),
+            CategoryItem(
+                id = "home",
+                title = "منزل وديكور",
+                iconName = "chair",
+                productCount = 6,
+                subCategories = listOf("الكل", "ديكور وإضاءة", "أواني وتحف", "مفروشات")
+            )
+        )
     )
+    val categoriesState: StateFlow<List<CategoryItem>> = _categories.asStateFlow()
+    val categories: List<CategoryItem> get() = _categories.value
 
     // Stores (Multi-Store Vendors)
     private val _stores = MutableStateFlow(
@@ -152,111 +312,192 @@ class StoreRepository {
     )
     val stores: StateFlow<List<Store>> = _stores.asStateFlow()
 
-    // Products
+    // Products fully matched with category, subcategory, brand & detailed specs
     private val _products = MutableStateFlow(
         listOf(
             Product(
                 id = 101,
                 storeId = 1,
-                storeName = "متجر التقنية الذكية",
+                storeName = "متجر التقنية الذكية للإلكترونيات",
                 name = "سماعة رأس لاسلكية إلغاء الضوضاء Pro Max",
-                description = "صوت نقي ثلاثي الأبعاد مع بطارية تدوم 40 ساعة وميكروفون نقي للمكالمات",
+                description = "صوت نقي ثلاثي الأبعاد مع بطارية تدوم 40 ساعة وميكروفون فائق النقاء للمكالمات والعزل الصوتي",
                 priceYer = 45000.0,
                 originalPriceYer = 60000.0,
                 category = "electronics",
+                subCategory = "سماعات وملحقات",
+                brand = "Sony SoundPro",
+                specs = mapOf(
+                    "الماركة / الطراز" to "SoundPro Ultra WH-1000",
+                    "نوع الاتصال" to "بلوتوث 5.3 + منفذ AUX 3.5mm",
+                    "عزل الضوضاء" to "نشط ANC هجين مزدوج الميكروفون",
+                    "سعة البطارية" to "800 مللي أمبير (40 ساعة تشغيل)",
+                    "منفذ الشحن" to "Type-C يدعم الشحن السريع (10 دقائق = 5 ساعات)",
+                    "الوزن" to "250 جرام مريح ومبطن بالجلد الفاخر",
+                    "مقاومة الرذاذ" to "معيار IPX4 المقاوم للعرق ورذاذ الماء"
+                ),
                 rating = 4.9,
                 badge = "الأكثر مبيعاً"
             ),
             Product(
                 id = 102,
                 storeId = 1,
-                storeName = "متجر التقنية الذكية",
+                storeName = "متجر التقنية الذكية للإلكترونيات",
                 name = "ساعة ذكية رياضية مقاومة للماء مع مراقب النبض",
-                description = "شاشة AMOLED ملونة، تتبع النشاط الرياضي والنوم، متوافقة مع جميع الأجهزة",
+                description = "شاشة AMOLED ملونة عالية الوضوح، تتبع النشاط الرياضي والنوم، متوافقة مع جميع أجهزة أندرويد و iOS",
                 priceYer = 28000.0,
                 originalPriceYer = 35000.0,
                 category = "electronics",
+                subCategory = "ساعات ذكية",
+                brand = "FitTech Pro",
+                specs = mapOf(
+                    "نوع الشاشة" to "AMOLED 1.43 بوصة بدقة 466x466",
+                    "مقاومة الماء" to "5ATM غوص حتى عمق 50 متراً",
+                    "المستشعرات" to "معدل نبضات القلب، تشبع الأكسجين SpO2، قياس الإجهاد",
+                    "البطارية" to "عمر بطارية يصل إلى 14 يوماً في الاستخدام العادي",
+                    "التوافق" to "Android 8.0+ و iOS 12.0+",
+                    "الاتصال" to "إجراء والرد على المكالمات عبر البلوتوث"
+                ),
                 rating = 4.8,
                 badge = "خصم 20%"
             ),
             Product(
                 id = 103,
                 storeId = 1,
-                storeName = "متجر التقنية الذكية",
+                storeName = "متجر التقنية الذكية للإلكترونيات",
                 name = "شاحن سريع 65W GaN متعدد المنافذ",
-                description = "شحن فائق السرعة لـ 3 أجهزة في وقت واحد بتقنية الحماية الذكية",
+                description = "شحن فائق السرعة لـ 3 أجهزة في وقت واحد بتقنية نيتريد الغاليوم GaN والحماية الذكية من زيادة الحرارة",
                 priceYer = 12500.0,
-                originalPriceYer = null,
+                originalPriceYer = 16000.0,
                 category = "electronics",
+                subCategory = "شواحن وكابلات",
+                brand = "Anker PowerPort",
+                specs = mapOf(
+                    "القدرة الإجمالية" to "65 واط فائق السرعة",
+                    "المنافذ" to "2x USB-C PD 3.0 + 1x USB-A QC 3.0",
+                    "التقنية" to "GaN III المتطورة لتقليل الحرارة والحجم",
+                    "أنظمة الحماية" to "حماية من التيارات الزائدة وارتفاع الجهد والحرارة",
+                    "التوافق" to "الهواتف الذكية، اللابتوبات، الأجهزة اللوحية"
+                ),
                 rating = 4.7
             ),
             Product(
                 id = 201,
                 storeId = 2,
-                storeName = "هايبر ماركت البركة",
+                storeName = "هايبر ماركت البركة المركزي",
                 name = "سلة المواد الغذائية العائلية المتكاملة",
-                description = "أرز بسمتي فاخر، زيت طبخ نقي، سكر، حليب، معكرونة ودقيق فاخر",
+                description = "أرز بسمتي فاخر حبة طويلة، زيت طبخ نقي، سكر ممتاز، حليب مجفف، معكرونة ودقيق فاخر مخصص للمخابز",
                 priceYer = 38000.0,
                 originalPriceYer = 44000.0,
                 category = "supermarket",
+                subCategory = "سلات غذائية",
+                brand = "البركة فاميلي",
+                specs = mapOf(
+                    "محتويات السلة" to "أرز بسمتي 10 كجم، زيت 4 لتر، سكر 5 كجم، حليب 1.8 كجم",
+                    "التغليف" to "صناديق محكمة الغلق ومحمية من الرطوبة",
+                    "تاريخ الإنتاج" to "حديث الإنتاج مع ضمان الصلاحية الكاملة",
+                    "بلد المنشأ" to "أصناف مختارة من الهند وماليزيا واليمن"
+                ),
                 rating = 4.9,
                 badge = "توفير أسبوعي"
             ),
             Product(
                 id = 202,
                 storeId = 2,
-                storeName = "هايبر ماركت البركة",
-                name = "عسل سدر طبيعي فاخر 1 كجم",
-                description = "عسل نحل دوعني أصلي 100% غني بالفوائد الصحية والمناعية",
+                storeName = "هايبر ماركت البركة المركزي",
+                name = "عسل سدر طبيعي دوعني فاخر 1 كجم",
+                description = "عسل نحل دوعني أصلي 100% مستخرج من وادي دوعن الشهير، غني بالإنزيمات والفوائد الصحية والمناعية المعتمدة",
                 priceYer = 24000.0,
                 originalPriceYer = 30000.0,
                 category = "supermarket",
+                subCategory = "عسل ومأكولات",
+                brand = "عسل دوعن الملكي",
+                specs = mapOf(
+                    "الوزن الصافي" to "1 كجم صافي في عبوة زجاجية صحية",
+                    "المصدر والمزرعة" to "أودية دوعن - حضرموت - الجمهورية اليمنية",
+                    "النقاوة" to "طبيعي 100% بدون تغذية سكرية أو تسخين",
+                    "الشهادة والضمان" to "فحص مخبري معتمد مع شهادة الجودة الأصلية",
+                    "مدة الصلاحية" to "سنتان في درجة حرارة الغرفة"
+                ),
                 rating = 5.0,
                 badge = "طبيعي 100%"
             ),
             Product(
                 id = 301,
                 storeId = 3,
-                storeName = "دار النخبة للأزياء",
+                storeName = "دار النخبة للأزياء والأناقة",
                 name = "ثوب فاخر قطن إنجليزي مع ياقة عصرية",
-                description = "حياكة راقية وقماش بارد ومريح ومقاوم للتجاعيد للمناسبات",
+                description = "حياكة راقية وقماش بارد ناعم مريح ومقاوم للتجاعيد، تصميم أنيق للمناسبات والأعياد",
                 priceYer = 22000.0,
                 originalPriceYer = 28000.0,
                 category = "fashion",
+                subCategory = "أزياء رجالية",
+                brand = "النخبة للخياطة الراقية",
+                specs = mapOf(
+                    "نوع القماش" to "قطن إنجليزي مخلوط فاخر ناعم وبارد",
+                    "المقاسات المتوفرة" to "52، 54، 56، 58، 60، 62",
+                    "الياقة والأزرار" to "ياقة كلاسيكية مع أزرار صدفية مخفية",
+                    "إرشادات الغسيل" to "غسيل بالماء البارد مع تجفيف لطيف وكوي متوسط"
+                ),
                 rating = 4.8
             ),
             Product(
                 id = 302,
                 storeId = 3,
-                storeName = "دار النخبة للأزياء",
+                storeName = "دار النخبة للأزياء والأناقة",
                 name = "حذاء جلدي رسمي خفيف مريح للقدمين",
-                description = "جلد طبيعي مرن مع نعل طبي مانع للانزلاق",
+                description = "جلد طبيعي مرن مع نعل طبي مانع للانزلاق، تصميم إيطالي مريح للارتداء طوال ساعات العمل",
                 priceYer = 18500.0,
-                originalPriceYer = null,
+                originalPriceYer = 23000.0,
                 category = "fashion",
+                subCategory = "أحذية فاخرة",
+                brand = "رويال كلاسيك",
+                specs = mapOf(
+                    "الخامة الخارجية" to "جلد طبيعي أصلي 100%",
+                    "الفرش الداخلي" to "نعل طبي ميموري فوم ممتص للصدمات",
+                    "النعل الخارجي" to "مطاطي مرن مقاوم للانزلاق والتآكل",
+                    "المقاسات" to "من 40 إلى 45"
+                ),
                 rating = 4.6
             ),
             Product(
                 id = 401,
                 storeId = 4,
-                storeName = "متجر الأندلس للعطور",
+                storeName = "متجر الأندلس للعطور والبخور",
                 name = "عطر ملوك العود الملكي 100 مل",
-                description = "مزيج ساحر من دهن العود الفاخر والعنبر والورد الطائفي يدوم 48 ساعة",
+                description = "مزيج ساحر من دهن العود الكمبودي الفاخر والعنبر والورد الطائفي يدوم 48 ساعة على الملابس",
                 priceYer = 32000.0,
                 originalPriceYer = 42000.0,
                 category = "perfumes",
+                subCategory = "عطور ملكية",
+                brand = "الأندلس بريميوم",
+                specs = mapOf(
+                    "الحجم" to "100 مل رذاذ طبيعي",
+                    "التركيز" to "Eau De Parfum مركز بنسبة زيت عطرية 30%",
+                    "مقدمة العطر" to "ورد طائفي، هيل جبلي",
+                    "قلب العطر" to "عنبر ملكي، خشب الأرز",
+                    "قاعدة العطر" to "دهن عود كمبودي عتيق، مسك أبيض فاخر",
+                    "الثبات والفوحان" to "ثبات يدوم أكثر من 48 ساعة مع فوحان عالي"
+                ),
                 rating = 4.9,
                 badge = "مميز"
             ),
             Product(
                 id = 501,
                 storeId = 5,
-                storeName = "صيدلية الحياة",
+                storeName = "صيدلية ومستلزمات الحياة",
                 name = "مجموعة فيتامينات متعددة ومعادن أوميغا 3",
-                description = "دعم متكامل للمناعة والطاقة والنشاط الذهني والبدني",
+                description = "دعم متكامل للمناعة والطاقة والنشاط الذهني والبدني، تركيبة غنية بـ 24 عنصراً غذائياً معتمداً",
                 priceYer = 9500.0,
                 originalPriceYer = 12000.0,
                 category = "pharmacy",
+                subCategory = "فيتامينات ومكملات",
+                brand = "فيتالايت فارما",
+                specs = mapOf(
+                    "الكمية" to "60 كبسولة جيلاتينية سهلة البلع",
+                    "المكونات الفعالة" to "أوميغا 3، زنك، فيتامين D3، فيتامين C، مركب B الكامل",
+                    "طريقة الاستخدام" to "كبسولة واحدة يومياً بعد وجبة الإفطار أو الغداء",
+                    "الترخيص والتسجيل" to "معتمد ومسجل رسمياً لدى الهيئة العليا للأدوية والمستلزمات الطبية"
+                ),
                 rating = 4.9
             )
         )
@@ -419,7 +660,7 @@ class StoreRepository {
         listOf(
             StoreOrder(
                 id = "ORD-9912",
-                storeName = "متجر التقنية الذكية",
+                storeName = "متجر التقنية الذكية للإلكترونيات",
                 totalAmount = 45000.0,
                 currency = "ر.ي",
                 date = "اليوم، 10:45 ص",
@@ -427,10 +668,13 @@ class StoreRepository {
                 itemsCount = 1,
                 items = listOf(
                     OrderItemDetail(
-                        productName = "سماعات رأس لاسلكية Pro عازلة للضوضاء",
+                        productId = 101,
+                        productName = "سماعة رأس لاسلكية إلغاء الضوضاء Pro Max",
                         quantity = 1,
                         priceYer = 45000.0,
-                        category = "electronics"
+                        category = "electronics",
+                        subCategory = "سماعات وملحقات",
+                        storeName = "متجر التقنية الذكية للإلكترونيات"
                     )
                 ),
                 deliveryAddress = "صنعاء - شارع حدة - بجوار سيتي ماكس",
@@ -482,7 +726,7 @@ class StoreRepository {
             ),
             StoreOrder(
                 id = "ORD-9842",
-                storeName = "هايبر ماركت البركة",
+                storeName = "هايبر ماركت البركة المركزي",
                 totalAmount = 38000.0,
                 currency = "ر.ي",
                 date = "28 أغسطس 2026",
@@ -490,16 +734,22 @@ class StoreRepository {
                 itemsCount = 3,
                 items = listOf(
                     OrderItemDetail(
-                        productName = "سلة التوفير الغذائية الكبرى",
+                        productId = 201,
+                        productName = "سلة المواد الغذائية العائلية المتكاملة",
                         quantity = 1,
                         priceYer = 28000.0,
-                        category = "supermarket"
+                        category = "supermarket",
+                        subCategory = "سلات غذائية",
+                        storeName = "هايبر ماركت البركة المركزي"
                     ),
                     OrderItemDetail(
-                        productName = "زيت نباتي نقي مكرر 4 لتر",
+                        productId = 202,
+                        productName = "عسل سدر طبيعي دوعني فاخر 1 كجم",
                         quantity = 2,
                         priceYer = 5000.0,
-                        category = "supermarket"
+                        category = "supermarket",
+                        subCategory = "عسل ومأكولات",
+                        storeName = "هايبر ماركت البركة المركزي"
                     )
                 ),
                 deliveryAddress = "صنعاء - حدة المدينة - شارع بيروت",
@@ -754,10 +1004,13 @@ class StoreRepository {
             val cartItems = _cart.value
             val orderItems = cartItems.map {
                 OrderItemDetail(
+                    productId = it.product.id,
                     productName = it.product.name,
                     quantity = it.quantity,
                     priceYer = it.product.priceYer,
-                    category = it.product.category
+                    category = it.product.category,
+                    subCategory = it.product.subCategory,
+                    storeName = it.product.storeName
                 )
             }
 
@@ -786,6 +1039,27 @@ class StoreRepository {
                 )
             )
             _orders.value = listOf(newOrder) + _orders.value
+
+            // Also attempt to push order to Django backend if logged in
+            val token = _userSession.value.token
+            if (!token.isNullOrBlank() && !token.startsWith("local_")) {
+                coroutineScope.launch {
+                    try {
+                        val api = NetworkClient.getApiService(_djangoBaseUrl.value)
+                        val itemsPayload = cartItems.map {
+                            CreateOrderItemRequest(productId = it.product.id, quantity = it.quantity)
+                        }
+                        api.createOrder(
+                            token = "Token $token",
+                            request = CreateOrderRequest(
+                                paymentMethod = "wallet",
+                                items = itemsPayload
+                            )
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
+
             clearCart()
             return true
         }
@@ -793,8 +1067,501 @@ class StoreRepository {
     }
 
     fun checkoutCashOnDelivery(total: Double, storeName: String) {
-        // Kept for interface compatibility, but payment is now restricted to wallet
         payOrderWithWallet(total, storeName)
+    }
+
+    fun fetchStoresAndProductsFromApi() {
+        coroutineScope.launch {
+            try {
+                val api = NetworkClient.getApiService(_djangoBaseUrl.value)
+                val baseUrl = _djangoBaseUrl.value.removeSuffix("/api/").removeSuffix("/")
+                
+                // 1. Fetch Categories & Subcategories from Server
+                try {
+                    val catResp1 = api.getCategories(page = 1)
+                    if (catResp1.isSuccessful && catResp1.body() != null) {
+                        val allCatDtos = mutableListOf<CategoryDto>()
+                        allCatDtos.addAll(catResp1.body()!!.results)
+                        if (catResp1.body()!!.next != null) {
+                            try {
+                                val catResp2 = api.getCategories(page = 2)
+                                if (catResp2.isSuccessful && catResp2.body() != null) {
+                                    allCatDtos.addAll(catResp2.body()!!.results)
+                                }
+                            } catch (_: Exception) {}
+                        }
+
+                        if (allCatDtos.isNotEmpty()) {
+                            val mainCats = allCatDtos.filter { it.parent == null }
+                            val mappedCats = mutableListOf<CategoryItem>()
+                            // "All" item
+                            mappedCats.add(CategoryItem("all", "الكل", "grid", _products.value.size, listOf("الكل")))
+
+                            mainCats.forEach { main ->
+                                val children = allCatDtos.filter { it.parent == main.id }
+                                val subTitles = mutableListOf("الكل")
+                                subTitles.addAll(children.map { it.name })
+
+                                val iconName = when (main.name.trim()) {
+                                    "الإلكترونيات" -> "phone_iphone"
+                                    "الملابس" -> "checkroom"
+                                    "المأكولات" -> "shopping_basket"
+                                    "المنزل" -> "home"
+                                    "الجمال والعناية" -> "spa"
+                                    "الألعاب" -> "sports_esports"
+                                    "الرياضة" -> "fitness_center"
+                                    "السيارات" -> "directions_car"
+                                    "الكتب والتعليم" -> "menu_book"
+                                    else -> "category"
+                                }
+
+                                mappedCats.add(
+                                    CategoryItem(
+                                        id = main.name,
+                                        title = main.name,
+                                        iconName = iconName,
+                                        productCount = main.productsCount ?: children.size,
+                                        subCategories = subTitles,
+                                        serverId = main.id,
+                                        parentId = null
+                                    )
+                                )
+                            }
+                            _categories.value = mappedCats
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                // 2. Fetch Vendors/Stores
+                val vendorResp = api.getVendors()
+                if (vendorResp.isSuccessful && vendorResp.body() != null) {
+                    val vendorResults = vendorResp.body()!!.results
+                    if (vendorResults.isNotEmpty()) {
+                        val mappedStores = vendorResults.map { v ->
+                            Store(
+                                id = v.id,
+                                name = v.storeName,
+                                category = v.address ?: "عام",
+                                rating = 4.8,
+                                deliveryTime = "30 دقيقة",
+                                minOrder = "2,000 ر.ي",
+                                deliveryFee = "مجاني",
+                                description = v.description ?: "متجر معتمد على منصة شبيك",
+                                phone = v.phone ?: "771234567",
+                                logoUrl = v.logoUrl,
+                                coverUrl = v.coverUrl
+                            )
+                        }
+                        _stores.value = mappedStores
+                    }
+                }
+
+                // 3. Fetch Products with Full Server Details
+                val prodResp = api.getProducts()
+                if (prodResp.isSuccessful && prodResp.body() != null) {
+                    val productResults = prodResp.body()!!.results
+                    if (productResults.isNotEmpty()) {
+                        val mappedProducts = productResults.map { p ->
+                            val effectivePrice = p.effectivePrice?.toDoubleOrNull() 
+                                ?: p.salePrice?.toDoubleOrNull()
+                                ?: p.price?.toDoubleOrNull() 
+                                ?: 1000.0
+                            val origPrice = p.price?.toDoubleOrNull()
+                            val storeId = p.vendor?.id ?: 1
+                            val storeName = p.vendor?.storeName ?: "شبيك ستور"
+
+                            // Exact category & subcategory parsing
+                            val rootCat = p.categories.firstOrNull { it.parent == null }
+                            val subCat = p.categories.firstOrNull { it.parent != null }
+                            val catName = rootCat?.name ?: p.categories.firstOrNull()?.name ?: "الإلكترونيات"
+                            val subCatName = subCat?.name ?: ""
+
+                            // Image URLs
+                            val imgList = mutableListOf<String>()
+                            p.mainImageUrl?.let {
+                                val full = if (it.startsWith("http")) it else "$baseUrl$it"
+                                imgList.add(full)
+                            }
+                            p.gallery.forEach { g ->
+                                val full = if (g.url.startsWith("http")) g.url else "$baseUrl${g.url}"
+                                if (!imgList.contains(full)) imgList.add(full)
+                            }
+
+                            // Colors & Sizes
+                            val colorList = p.colors?.mapNotNull { it.name }?.filter { it.isNotBlank() }
+                                ?.ifEmpty { null } ?: listOf("أسود ملكي", "أزرق تيتانيوم")
+                            val sizeList = p.sizes?.mapNotNull { it.label }?.filter { it.isNotBlank() }
+                                ?.ifEmpty { null } ?: listOf("النسخة القياسية")
+
+                            // Specifications & Warranty
+                            val specsMap = mutableMapOf<String, String>()
+                            if (!p.brand.isNullOrBlank()) specsMap["الماركة"] = p.brand
+                            if (!p.material.isNullOrBlank()) specsMap["الخامة / المواصفات"] = p.material
+                            if (subCatName.isNotBlank()) specsMap["القسم الفرعي"] = subCatName
+                            if (!p.shippingNote.isNullOrBlank()) specsMap["الشحن والتوصيل"] = p.shippingNote
+                            if (!p.returnPolicy.isNullOrBlank()) specsMap["سياسة الإرجاع"] = p.returnPolicy
+
+                            var warrantyText = "ضمان فحص واستبدال معتمد"
+                            var hasWarranty = true
+
+                            if (p.details != null) {
+                                if (p.details is Map<*, *>) {
+                                    (p.details as Map<*, *>).forEach { (k, v) ->
+                                        val key = k?.toString() ?: ""
+                                        val value = v?.toString() ?: ""
+                                        if (value.isNotBlank()) {
+                                            when (key) {
+                                                "condition" -> specsMap["حالة المنتج"] = value
+                                                "warranty" -> {
+                                                    hasWarranty = (value == "نعم" || value.contains("نعم"))
+                                                    specsMap["الضمان"] = value
+                                                }
+                                                "warranty_duration" -> {
+                                                    warrantyText = "ضمان رسمي معتمد: $value"
+                                                    specsMap["مدة الضمان"] = value
+                                                }
+                                                "category_name" -> if (specsMap["القسم الفرعي"] == null) specsMap["القسم الفرعي"] = value
+                                                else -> if (!key.contains("_id")) specsMap[key] = value
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    specsMap["بيانات إضافية"] = p.details.toString()
+                                }
+                            }
+
+                            Product(
+                                id = p.id,
+                                storeId = storeId,
+                                storeName = storeName,
+                                name = p.name,
+                                description = p.description?.ifBlank { null } ?: "منتج أصلي معتمد متوفر من $storeName بضمان وجودة عالية وتوصيل سريع.",
+                                priceYer = effectivePrice,
+                                originalPriceYer = if (origPrice != null && origPrice > effectivePrice) origPrice else null,
+                                category = catName,
+                                subCategory = subCatName,
+                                brand = p.brand ?: "",
+                                specs = specsMap,
+                                rating = p.rating?.toDoubleOrNull() ?: 4.8,
+                                inStock = (p.availableStock ?: p.stock ?: 1) > 0,
+                                badge = if (p.isTrending == true) "الأكثر طلباً" else if ((p.discountPercent ?: 0) > 0) "خصم ${p.discountPercent}%" else null,
+                                images = if (imgList.isNotEmpty()) imgList else listOf("https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=600"),
+                                colors = colorList,
+                                sizes = sizeList,
+                                warranty = warrantyText,
+                                hasWarranty = hasWarranty,
+                                reviewsCount = p.reviewsCount ?: 12
+                            )
+                        }
+                        _products.value = mappedProducts
+                    }
+                }
+            } catch (_: Exception) {
+                // Keep default seed data on failure
+            }
+        }
+    }
+
+    fun fetchOrdersFromApi(token: String) {
+        coroutineScope.launch {
+            try {
+                val api = NetworkClient.getApiService(_djangoBaseUrl.value)
+                val resp = api.getOrders("Token $token")
+                if (resp.isSuccessful && resp.body() != null) {
+                    val ordersList = resp.body()!!.results
+                    if (ordersList.isNotEmpty()) {
+                        val mappedOrders = ordersList.map { o ->
+                            val items = o.items?.map { item ->
+                                OrderItemDetail(
+                                    productName = item.productName ?: "منتج",
+                                    quantity = item.quantity,
+                                    priceYer = item.unitPrice?.toDoubleOrNull() ?: 0.0,
+                                    category = "عام"
+                                )
+                            } ?: emptyList()
+
+                            StoreOrder(
+                                id = o.orderNumber ?: "ORD-${o.id}",
+                                storeName = o.items?.firstOrNull()?.vendorName ?: "شبيك ستور",
+                                totalAmount = o.total?.toDoubleOrNull() ?: 0.0,
+                                currency = o.currency ?: "ر.ي",
+                                date = o.createdAt?.take(10) ?: "الآن",
+                                status = when (o.status) {
+                                    "pending" -> "قيد المراجعة"
+                                    "processing" -> "قيد التجهيز"
+                                    "shipped" -> "في الطريق إليك"
+                                    "delivered" -> "تم التوصيل"
+                                    "cancelled" -> "ملغي"
+                                    else -> o.status ?: "قيد التجهيز"
+                                },
+                                itemsCount = items.sumOf { it.quantity },
+                                items = items,
+                                deliveryAddress = "صنعاء - العنوان المسجل",
+                                deliveryDriver = "مندوب التوصيل",
+                                driverPhone = "771234567",
+                                paymentMethod = o.paymentMethod ?: "الدفع الإلكتروني",
+                                statusStep = when (o.status) {
+                                    "pending" -> 0
+                                    "processing" -> 1
+                                    "shipped" -> 2
+                                    "delivered" -> 3
+                                    else -> 1
+                                }
+                            )
+                        }
+                        _orders.value = mappedOrders
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    // User Addresses Book
+    private val _addresses = MutableStateFlow<List<UserAddress>>(
+        listOf(
+            UserAddress(
+                id = 1,
+                title = "المنزل",
+                city = "صنعاء",
+                district = "حدة - الحي الدبلوماسي",
+                street = "شارع طوكيو، عمارة الأمل، شقة 4",
+                building = "عمارة 12",
+                phone = "770123456",
+                isDefault = true
+            ),
+            UserAddress(
+                id = 2,
+                title = "العمل / المتجر",
+                city = "صنعاء",
+                district = "شارع الزبيري",
+                street = "برج سبأ، الدور الثالث، مكتب 304",
+                building = "برج سبأ",
+                phone = "771234567",
+                isDefault = false
+            )
+        )
+    )
+    val addresses: StateFlow<List<UserAddress>> = _addresses.asStateFlow()
+
+    fun addAddress(address: UserAddress) {
+        val updated = if (address.isDefault) {
+            _addresses.value.map { it.copy(isDefault = false) } + address
+        } else {
+            _addresses.value + address
+        }
+        _addresses.value = updated
+    }
+
+    fun setDefaultAddress(id: Int) {
+        _addresses.value = _addresses.value.map {
+            it.copy(isDefault = (it.id == id))
+        }
+    }
+
+    fun deleteAddress(id: Int) {
+        _addresses.value = _addresses.value.filter { it.id != id }
+    }
+
+    // Support Tickets & Inquiries
+    private val _supportTickets = MutableStateFlow<List<SupportTicket>>(
+        listOf(
+            SupportTicket(
+                id = "TCK-1082",
+                subject = "استفسار بخصوص موعد شحن الطلب",
+                category = "شحن وتوصيل",
+                status = "تم الرد",
+                date = "اليوم 02:15 م",
+                lastMessage = "تم تسليم الشحنة لمندوب التوصيل في أمانة العاصمة."
+            ),
+            SupportTicket(
+                id = "TCK-1049",
+                subject = "تأكيد تغذية المحفظة عبر الكريمي",
+                category = "مشكلة دفع",
+                status = "مغلقة",
+                date = "أمس 09:30 ص",
+                lastMessage = "تم قيد المبلغ بنجاح في رصيد محفظتك المتاح."
+            )
+        )
+    )
+    val supportTickets: StateFlow<List<SupportTicket>> = _supportTickets.asStateFlow()
+
+    private val _supportChatMessages = MutableStateFlow<List<SupportChatMessage>>(
+        listOf(
+            SupportChatMessage("1", "خدمة العملاء", "مرحباً بك في خدمة عملاء متجر شبيك وسوق بلس. كيف يمكننا مساعدتك اليوم؟", "02:10 م", false),
+            SupportChatMessage("2", "أنت", "أريد الاستفسار عن كود الخصم وطريقة تفعيله عند الطلب.", "02:12 م", true),
+            SupportChatMessage("3", "خدمة العملاء", "أهلاً بك يا أخي! يتم إدراج كود الخصم تلقائياً عند الشراء عبر المحفظة أو من صفحة الترندات والعروض الخاصة.", "02:14 م", false)
+        )
+    )
+    val supportChatMessages: StateFlow<List<SupportChatMessage>> = _supportChatMessages.asStateFlow()
+
+    fun sendSupportMessage(msg: String) {
+        val newMsg = SupportChatMessage(
+            id = System.currentTimeMillis().toString(),
+            sender = "أنت",
+            message = msg,
+            time = SimpleDateFormat("hh:mm a", Locale("ar")).format(Date()),
+            isFromUser = true
+        )
+        _supportChatMessages.value = _supportChatMessages.value + newMsg
+
+        // Auto reply after delay
+        coroutineScope.launch {
+            kotlinx.coroutines.delay(1200)
+            val reply = SupportChatMessage(
+                id = (System.currentTimeMillis() + 1).toString(),
+                sender = "خدمة العملاء",
+                message = "شكراً لتواصلك معنا، استلمنا رسالتك: '$msg'. الموظف المختص يتابع طلبك الآن.",
+                time = SimpleDateFormat("hh:mm a", Locale("ar")).format(Date()),
+                isFromUser = false
+            )
+            _supportChatMessages.value = _supportChatMessages.value + reply
+        }
+    }
+
+    fun createSupportTicket(subject: String, category: String, details: String) {
+        val newTicket = SupportTicket(
+            id = "TCK-${(1000..9999).random()}",
+            subject = subject,
+            category = category,
+            status = "قيد المعالجة",
+            date = "الآن",
+            lastMessage = details
+        )
+        _supportTickets.value = listOf(newTicket) + _supportTickets.value
+        sendSupportMessage("تم فتح تذكرة جديدة [$category]: $subject - $details")
+    }
+
+    // Referral Program
+    private val _referralCode = MutableStateFlow("SHOP-770123")
+    val referralCode: StateFlow<String> = _referralCode.asStateFlow()
+
+    private val _invitedCount = MutableStateFlow(14)
+    val invitedCount: StateFlow<Int> = _invitedCount.asStateFlow()
+
+    private val _referralRewardYer = MutableStateFlow(35000.0)
+    val referralRewardYer: StateFlow<Double> = _referralRewardYer.asStateFlow()
+
+    // Preferences & Settings
+    private val _selectedCurrency = MutableStateFlow("YER")
+    val selectedCurrency: StateFlow<String> = _selectedCurrency.asStateFlow()
+
+    private val _notificationsEnabled = MutableStateFlow(true)
+    val notificationsEnabled: StateFlow<Boolean> = _notificationsEnabled.asStateFlow()
+
+    val currencyRates: List<CurrencyRate> = listOf(
+        CurrencyRate("USD", "YER", "535.00 ر.ي (صنعاء) / 1,900.00 ر.ي (عدن)"),
+        CurrencyRate("SAR", "YER", "140.50 ر.ي (صنعاء) / 500.00 ر.ي (عدن)"),
+        CurrencyRate("USD", "SAR", "3.75 ر.س")
+    )
+
+    fun setSelectedCurrency(curr: String) {
+        _selectedCurrency.value = curr
+    }
+
+    fun setNotificationsEnabled(enabled: Boolean) {
+        _notificationsEnabled.value = enabled
+    }
+
+    // Vendor Portal & Store Management
+    private val _vendorFinance = MutableStateFlow(
+        VendorFinance(
+            vendorName = "روائع العود والعطور",
+            walletBalance = 385000.0,
+            availableBalance = 310000.0,
+            earned = 645000.0,
+            paid = 260000.0,
+            pending = 75000.0,
+            currency = "ر.ي"
+        )
+    )
+    val vendorFinance: StateFlow<VendorFinance> = _vendorFinance.asStateFlow()
+
+    private val _vendorPayouts = MutableStateFlow<List<VendorPayoutRequest>>(
+        listOf(
+            VendorPayoutRequest(
+                id = "PO-9912",
+                amount = 150000.0,
+                currency = "ر.ي",
+                reference = "حوالة الكريمي - فرع حدة (770123456)",
+                date = "2026/08/28",
+                status = "paid"
+            ),
+            VendorPayoutRequest(
+                id = "PO-9954",
+                amount = 110000.0,
+                currency = "ر.ي",
+                reference = "شبكة النجم للحوالات (770123456)",
+                date = "2026/09/01",
+                status = "approved"
+            ),
+            VendorPayoutRequest(
+                id = "PO-9988",
+                amount = 75000.0,
+                currency = "ر.ي",
+                reference = "سحب إلى محفظة جيب الإلكترونية",
+                date = "2026/09/03",
+                status = "pending"
+            )
+        )
+    )
+    val vendorPayouts: StateFlow<List<VendorPayoutRequest>> = _vendorPayouts.asStateFlow()
+
+    fun requestVendorPayout(amount: Double, reference: String): Boolean {
+        if (amount <= 0 || amount > _vendorFinance.value.availableBalance) return false
+        val newReq = VendorPayoutRequest(
+            id = "PO-${(1000..9999).random()}",
+            amount = amount,
+            currency = "ر.ي",
+            reference = reference,
+            date = SimpleDateFormat("yyyy/MM/dd", Locale.US).format(Date()),
+            status = "pending"
+        )
+        _vendorPayouts.value = listOf(newReq) + _vendorPayouts.value
+        _vendorFinance.value = _vendorFinance.value.copy(
+            availableBalance = _vendorFinance.value.availableBalance - amount,
+            pending = _vendorFinance.value.pending + amount
+        )
+        return true
+    }
+
+    fun addVendorProduct(
+        name: String,
+        description: String,
+        priceYer: Double,
+        category: String,
+        stock: Int,
+        badge: String?
+    ) {
+        val newProduct = Product(
+            id = (_products.value.maxOfOrNull { it.id } ?: 100) + 1,
+            storeId = 1,
+            storeName = "روائع العود والعطور",
+            name = name,
+            description = description,
+            priceYer = priceYer,
+            originalPriceYer = priceYer * 1.25,
+            category = category,
+            rating = 5.0,
+            inStock = stock > 0,
+            badge = badge,
+            images = listOf("https://images.unsplash.com/photo-1594035910387-fea47794261f?w=600"),
+            reviewsCount = 1
+        )
+        _products.value = listOf(newProduct) + _products.value
+    }
+
+    fun updateOrderStatus(orderId: String, newStatus: String, newStep: Int) {
+        _orders.value = _orders.value.map { order ->
+            if (order.id == orderId) {
+                order.copy(status = newStatus, statusStep = newStep)
+            } else {
+                order
+            }
+        }
+    }
+
+    init {
+        fetchStoresAndProductsFromApi()
     }
 
     companion object {

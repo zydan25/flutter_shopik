@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -34,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +46,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AppNotification
+import kotlinx.coroutines.launch
 import com.example.data.model.OrderChatMessage
 import com.example.data.model.Store
 
@@ -52,14 +56,16 @@ import com.example.data.model.Store
 @Composable
 fun LoginWithPhoneDialog(
     onDismiss: () -> Unit,
-    onLogin: (phone: String, pass: String) -> Boolean
+    onLogin: suspend (phone: String, pass: String) -> Pair<Boolean, String?>
 ) {
     var phone by remember { mutableStateOf("770123456") }
     var password by remember { mutableStateOf("123456") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isLoading) onDismiss() },
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -82,7 +88,7 @@ fun LoginWithPhoneDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "سجل دخولك برقم الهاتف وكلمة السر للوصول إلى محفظتك وحسابك في المتاجر",
+                    text = "سجل دخولك برقم الهاتف وكلمة السر للربط مع السيرفر والوصول للمحفظة والطلبات",
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -94,12 +100,13 @@ fun LoginWithPhoneDialog(
                         phone = it
                         errorMessage = null
                     },
-                    label = { Text("رقم الهاتف") },
+                    label = { Text("رقم الهاتف أو اسم المستخدم") },
                     placeholder = { Text("مثال: 770123456") },
                     leadingIcon = {
                         Icon(imageVector = Icons.Default.Phone, contentDescription = null)
                     },
                     singleLine = true,
+                    enabled = !isLoading,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -116,6 +123,7 @@ fun LoginWithPhoneDialog(
                         Icon(imageVector = Icons.Default.Lock, contentDescription = null)
                     },
                     singleLine = true,
+                    enabled = !isLoading,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -130,24 +138,43 @@ fun LoginWithPhoneDialog(
         },
         confirmButton = {
             Button(
+                enabled = !isLoading,
                 onClick = {
                     if (phone.isBlank()) {
                         errorMessage = "يرجى كتابة رقم الهاتف"
                     } else if (password.length < 4) {
                         errorMessage = "كلمة السر يجب أن تكون 4 خانات على الأقل"
                     } else {
-                        val success = onLogin(phone, password)
-                        if (!success) {
-                            errorMessage = "بيانات الدخول غير صحيحة"
+                        isLoading = true
+                        errorMessage = null
+                        scope.launch {
+                            val (success, err) = onLogin(phone, password)
+                            isLoading = false
+                            if (!success) {
+                                errorMessage = err ?: "بيانات الدخول غير صحيحة"
+                            }
                         }
                     }
                 }
             ) {
-                Text("تسجيل الدخول", fontWeight = FontWeight.Bold)
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("جاري الدخول...")
+                } else {
+                    Text("تسجيل الدخول", fontWeight = FontWeight.Bold)
+                }
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
+            OutlinedButton(
+                enabled = !isLoading,
+                onClick = onDismiss
+            ) {
                 Text("إلغاء")
             }
         }
@@ -281,6 +308,8 @@ fun DjangoSettingsDialog(
 ) {
     var urlText by remember { mutableStateOf(currentUrl) }
     var pingStatus by remember { mutableStateOf<String?>(null) }
+    var isPinging by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -311,29 +340,46 @@ fun DjangoSettingsDialog(
                         pingStatus = null
                     },
                     label = { Text("Django Base URL") },
-                    placeholder = { Text("http://10.0.2.2:8000/api/") },
+                    placeholder = { Text("https://shopik.alattab.site/api/") },
                     shape = RoundedCornerShape(10.dp),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 Button(
+                    enabled = !isPinging,
                     onClick = {
-                        pingStatus = "تم فحص نقطة النهاية: النماذج متوافقة مع Django REST Framework جاهزة للإرسال والاستقبال!"
+                        isPinging = true
+                        pingStatus = null
+                        scope.launch {
+                            val ok = com.example.data.repository.StoreRepository.instance.testDjangoConnection(urlText)
+                            isPinging = false
+                            pingStatus = if (ok) {
+                                "✅ تم الاتصال بنجاح بالخادم واسترجاع البيانات!"
+                            } else {
+                                "❌ تعذر الاتصال بالرابط، يرجى التأكد من تشغيل السيرفر أو الاتصال بالإنترنت."
+                            }
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                     )
                 ) {
-                    Text("اختبار الاتصال بالخادم")
+                    if (isPinging) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("جاري الفحص...")
+                    } else {
+                        Text("اختبار الاتصال بالخادم")
+                    }
                 }
 
                 if (pingStatus != null) {
                     Text(
                         text = pingStatus ?: "",
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = Color(0xFF2E7D32),
+                            color = if (pingStatus?.startsWith("✅") == true) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Bold
                         )
                     )

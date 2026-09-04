@@ -14,7 +14,9 @@ data class Store(
     val location: String = "صنعاء - شارع الزبيري",
     val phone: String = "771234567",
     val workingHours: String = "9:00 ص - 10:00 م",
-    val storeCategories: List<String> = listOf("الكل", "العروض", "جديدنا", "الأكثر طلباً")
+    val storeCategories: List<String> = listOf("الكل", "العروض", "جديدنا", "الأكثر طلباً"),
+    val logoUrl: String? = null,
+    val coverUrl: String? = null
 )
 
 data class Product(
@@ -26,6 +28,9 @@ data class Product(
     val priceYer: Double,
     val originalPriceYer: Double? = null,
     val category: String,
+    val subCategory: String = "",
+    val brand: String = "",
+    val specs: Map<String, String> = emptyMap(),
     val rating: Double = 4.8,
     val inStock: Boolean = true,
     val badge: String? = null,
@@ -50,7 +55,10 @@ data class CategoryItem(
     val id: String,
     val title: String,
     val iconName: String,
-    val productCount: Int
+    val productCount: Int,
+    val subCategories: List<String> = emptyList(),
+    val serverId: Int? = null,
+    val parentId: Int? = null
 )
 
 data class BannerItem(
@@ -90,10 +98,13 @@ data class WalletTransaction(
 )
 
 data class OrderItemDetail(
+    val productId: Int? = null,
     val productName: String,
     val quantity: Int,
     val priceYer: Double,
-    val category: String = ""
+    val category: String = "",
+    val subCategory: String = "",
+    val storeName: String = ""
 )
 
 data class OrderChatMessage(
@@ -144,5 +155,61 @@ data class UserSession(
     val phone: String,
     val fullName: String,
     val token: String? = null,
-    val isLoggedIn: Boolean = true
+    val isLoggedIn: Boolean = false,
+    val governorate: String = "",
+    val pointsBalance: Int = 0,
+    val role: String = "customer"
+)
+
+data class UserAddress(
+    val id: Int,
+    val title: String, // "المنزل", "العمل", "المتجر"
+    val city: String, // "صنعاء", "عدن", "تعز", "إب", "حضرموت", "الحديدة"
+    val district: String, // "حدة", "الأصبحي", "الصافية", "التحرير"
+    val street: String,
+    val building: String = "",
+    val phone: String,
+    val isDefault: Boolean = false
+)
+
+data class SupportTicket(
+    val id: String,
+    val subject: String,
+    val category: String, // "استفسار عن طلب", "مشكلة دفع", "شحن وتوصيل", "شكوى", "اقتراح"
+    val status: String, // "مفتوحة", "قيد المعالجة", "تم الرد"
+    val date: String,
+    val lastMessage: String
+)
+
+data class SupportChatMessage(
+    val id: String,
+    val sender: String,
+    val message: String,
+    val time: String,
+    val isFromUser: Boolean
+)
+
+data class VendorPayoutRequest(
+    val id: String,
+    val amount: Double,
+    val currency: String = "ر.ي",
+    val reference: String,
+    val date: String,
+    val status: String // "approved", "paid", "pending", "rejected"
+)
+
+data class VendorFinance(
+    val vendorName: String,
+    val walletBalance: Double,
+    val availableBalance: Double,
+    val earned: Double,
+    val paid: Double,
+    val pending: Double,
+    val currency: String = "ر.ي"
+)
+
+data class CurrencyRate(
+    val baseCurrency: String,
+    val targetCurrency: String,
+    val rate: String
 )

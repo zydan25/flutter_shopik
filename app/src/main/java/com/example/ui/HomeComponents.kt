@@ -2,6 +2,7 @@ package com.example.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
+import coil.compose.AsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -577,19 +578,31 @@ fun FeaturedStoresSection(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(46.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primaryContainer),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Storefront,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(26.dp)
+                            if (!store.logoUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = store.logoUrl,
+                                    contentDescription = store.name,
+                                    modifier = Modifier
+                                        .size(46.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
                                 )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(46.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Storefront,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
                             }
 
                             Column(modifier = Modifier.weight(1f)) {
@@ -708,20 +721,30 @@ fun ProductCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                // Product Icon based on category
-                val icon = when (product.category) {
-                    "electronics" -> Icons.Default.PhoneIphone
-                    "supermarket" -> Icons.Default.ShoppingBasket
-                    "fashion" -> Icons.Default.Checkroom
-                    "perfumes" -> Icons.Default.Spa
-                    else -> Icons.Default.LocalPharmacy
+                val imageUrl = product.images.firstOrNull()
+                if (!imageUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = product.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    // Product Icon based on category
+                    val icon = when (product.category) {
+                        "electronics" -> Icons.Default.PhoneIphone
+                        "supermarket" -> Icons.Default.ShoppingBasket
+                        "fashion" -> Icons.Default.Checkroom
+                        "perfumes" -> Icons.Default.Spa
+                        else -> Icons.Default.LocalPharmacy
+                    }
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                        modifier = Modifier.size(54.dp)
+                    )
                 }
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
-                    modifier = Modifier.size(54.dp)
-                )
 
                 // Store badge
                 Surface(

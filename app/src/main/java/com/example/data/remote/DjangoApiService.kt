@@ -1,9 +1,5 @@
 package com.example.data.remote
 
-import com.example.data.model.Product
-import com.example.data.model.Store
-import com.example.data.model.WalletAccount
-import com.example.data.model.WalletTransaction
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -12,88 +8,58 @@ import retrofit2.http.POST
 import retrofit2.http.Query
 
 /**
- * Django REST Framework API Service.
- * Matches standard DRF ViewSets / APIViews on the Django backend.
+ * Django REST Framework API Service for shopik.alattab.site
  */
 interface DjangoApiService {
 
-    // 1. MStores & Multi-vendor endpoints
-    @GET("stores/")
-    suspend fun getStores(): Response<List<Store>>
+    // 1. Categories
+    @GET("categories/")
+    suspend fun getCategories(
+        @Query("page") page: Int? = null
+    ): Response<CategoryListResponse>
 
+    // 2. Vendors (Stores)
+    @GET("vendors/")
+    suspend fun getVendors(): Response<VendorResponse>
+
+    // 3. Products
     @GET("products/")
     suspend fun getProducts(
-        @Query("store_id") storeId: Int? = null,
-        @Query("category") category: String? = null,
-        @Query("search") search: String? = null
-    ): Response<List<Product>>
+        @Query("vendor") vendorId: Int? = null,
+        @Query("search") search: String? = null,
+        @Query("category") category: String? = null
+    ): Response<ProductResponse>
 
-    // 2. Authentication with Phone and Password (as requested)
+    // 4. Auth
     @POST("auth/login/")
     suspend fun login(
         @Body request: LoginPayload
-    ): Response<AuthTokenResponse>
+    ): Response<AuthLoginResponse>
 
-    // 3. Jeeb Wallet endpoints (Balance, Transactions, Pay)
-    @GET("wallet/account/")
-    suspend fun getWalletAccount(
+    @POST("auth/register/")
+    suspend fun register(
+        @Body request: RegisterPayload
+    ): Response<AuthLoginResponse>
+
+    @GET("auth/me/")
+    suspend fun getProfile(
         @Header("Authorization") token: String
-    ): Response<WalletAccount>
+    ): Response<UserDto>
 
-    @GET("wallet/transactions/")
-    suspend fun getWalletTransactions(
+    // 5. Orders
+    @GET("orders/")
+    suspend fun getOrders(
         @Header("Authorization") token: String
-    ): Response<List<WalletTransaction>>
+    ): Response<OrderResponse>
 
-    @POST("wallet/transfer/")
-    suspend fun transferFunds(
+    @POST("orders/")
+    suspend fun createOrder(
         @Header("Authorization") token: String,
-        @Body payload: TransferPayload
-    ): Response<WalletTransaction>
-
-    // 4. Order creation & Checkout
-    @POST("orders/checkout/")
-    suspend fun checkoutOrder(
-        @Header("Authorization") token: String,
-        @Body payload: CheckoutPayload
-    ): Response<CheckoutResponse>
+        @Body request: CreateOrderRequest
+    ): Response<OrderDto>
 }
 
 data class LoginPayload(
     val phone: String,
     val password: String
-)
-
-data class AuthTokenResponse(
-    val token: String,
-    val user_id: Int,
-    val username: String,
-    val phone: String,
-    val is_active: Boolean
-)
-
-data class TransferPayload(
-    val recipient_phone_or_account: String,
-    val amount: Double,
-    val currency: String,
-    val note: String? = null
-)
-
-data class CheckoutPayload(
-    val store_id: Int,
-    val items: List<CheckoutItemPayload>,
-    val payment_method: String, // "JEEB_WALLET" or "CASH_ON_DELIVERY"
-    val delivery_address: String
-)
-
-data class CheckoutItemPayload(
-    val product_id: Int,
-    val quantity: Int
-)
-
-data class CheckoutResponse(
-    val order_id: String,
-    val status: String,
-    val total: Double,
-    val message: String
 )
